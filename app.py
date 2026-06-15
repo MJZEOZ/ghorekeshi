@@ -38,11 +38,11 @@ def webhook():
     text = message.get('text', '')
 
     if text == '/start':
-        send_message(chat_id, "سلام! به ربات قرعه‌کشی خوش آمدید.\nبرای ساخت قرعه‌کشی، ابتدا باید عضو کانال حامی باشید.")
         if check_membership(user_id):
-            send_message(chat_id, "✅ عضویت تایید شد. عنوان قرعه‌کشی خود را بنویسید:")
+            send_message(chat_id, "✅ عضویت شما تایید شد. لطفاً عنوان قرعه‌کشی خود را بنویسید:")
         else:
-            send_message(chat_id, f"❌ لطفاً ابتدا عضو کانال {REQUIRED_CHANNEL} شوید و دوباره /start بزنید.")
+            msg = f"سلام! برای استفاده از ربات، ابتدا باید در کانال حامی عضو شوید:\n{REQUIRED_CHANNEL}\n\nبعد از عضویت، دوباره /start را بزنید."
+            send_message(chat_id, msg)
 
     return jsonify({'status': 'ok'}), 200
 
