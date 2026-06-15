@@ -5,12 +5,19 @@ from config import BOT_TOKEN, BASE_URL, REQUIRED_CHANNEL
 
 app = Flask(__name__)
 
-# ذخیره وضعیت و اطلاعات هر کاربر
-user_states = {}
+# دیکشنری برای ذخیره داده‌های موقت کاربران
+user_data = {}
 
 def send_message(chat_id, text, reply_markup=None):
     url = f"{BASE_URL}/sendMessage"
-    payload = {'chat_id': chat_id, 'text': text}
+    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
+    if reply_markup:
+        payload['reply_markup'] = reply_markup
+    return requests.post(url, json=payload)
+
+def send_photo(chat_id, file_id, caption, reply_markup=None):
+    url = f"{BASE_URL}/sendPhoto"
+    payload = {'chat_id': chat_id, 'photo': file_id, 'caption': caption, 'parse_mode': 'Markdown'}
     if reply_markup:
         payload['reply_markup'] = reply_markup
     return requests.post(url, json=payload)
@@ -28,89 +35,118 @@ def check_membership(user_id):
 @app.route('/', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
-        return "Bot is running!", 200
+        return "Bot is Live!", 200
 
     data = request.get_json()
-    if not data or 'message' not in data:
-        return jsonify({'status': 'ok'}), 200
+    if not data: return jsonify({'status': 'no_data'}), 200
 
-    message = data['message']
-    chat_id = message['chat']['id']
-    user_id = message['from']['id']
-    text = message.get('text', '')
-
-    # ۱. شروع و خوش‌آمدگویی
-    if text == '/start':
-        user_states[user_id] = {'step': 'START'}
-        welcome_msg = "سلام! به ربات قرعه‌کشی خوش آمدید. 😊"
-        keyboard = {
-            "inline_keyboard": [[
-                {"text": "قرعه‌کشی جدید", "callback_data": "new_lottery"},
-                {"text": "روی پست کانال", "callback_data": "post_lottery"}
-            ]]
-        }
-        send_message(chat_id, welcome_msg, keyboard)
-        return jsonify({'status': 'ok'}), 200
-
-    # بررسی دکمه‌های کلیک شده (Callback Query)
+    # مدیریت کلیک بر روی دکمه‌ها
     if 'callback_query' in data:
-        cq = data['callback_query']
-        user_id = cq['from']['id']
-        chat_id = cq['message']['chat']['id']
-        choice = cq['data']
+        cb = data['callback_query']
+        u_id = cb['from']['id']
+        chat_id = cb['message']['chat']['id']
+        cmd = cb['data']
+        
+        requests.post(f"{BASE_URL}/answerCallbackQuery", json={'callback_query_id': cb['id']})
 
-        if choice == "new_lottery":
-            user_states[user_id] = {'step': 'GET_TITLE', 'type': 'new'}
-            send_message(chat_id, "لطفاً **عنوان** قرعه‌کشی را بنویسید:")
+        if cmd == "new_lottery":
+            user_data[u_id] = {'step': 'GET_TITLE', 'type': 'new'}
+            send_message(chat_id, "✅ مسیر قرعه‌کشی جدید انتخاب شد.\n\n۱. لطفاً **عنوان قرعه‌کشی** را وارد کنید:")
         
-        elif choice == "post_lottery":
-            user_states[user_id] = {'step': 'GET_POST_LINK', 'type': 'post'}
-            send_message(chat_id, "لطفاً **لینک پست بله** را ارسال کنید:")
+        elif cmd == "post_lottery":
+            user_data[u_id] = {'step': 'GET_LINK', 'type': 'post'}
+            send_message(chat_id, "✅ مسیر قرعه‌کشی روی پست انتخاب شد.\n\n۱. لطفاً **لینک پست بله** را ارسال کنید:")
         
-        elif choice == "publish":
-            if check_membership(user_id):
-                send_message(chat_id, "✅ قرعه‌کشی با موفقیت تایید و آماده انتشار شد.")
+        elif cmd == "check_and_publish":
+            if check_membership(u_id):
+                send_message(chat_id, "🚀 تبریک! عضویت شما تایید شد. قرعه‌کشی در صف انتشار قرار گرفت.")
             else:
-                send_message(chat_id, f"❌ خطا! شما هنوز عضو کانال {REQUIRED_CHANNEL} نشده‌اید.")
+                keyboard = {"inline_keyboard": [[{"text": "📢 عضویت در وام‌سرا", "url": "https://ble.ir/wamsara"}],
+                                              [{"text": "✅ عضو شدم (بررسی مجدد)", "callback_data": "check_and_publish"}]]}
+                send_message(chat_id, "⚠️ شما هنوز عضو کانال حامی نشده‌اید. برای انتشار باید ابتدا عضو شوید:", keyboard)
         
         return jsonify({'status': 'ok'}), 200
 
-    # منطق مراحل (Steps)
-    state = user_states.get(user_id, {}).get('step')
+    # مدیریت پیام‌های متنی و فایل‌ها
+    if 'message' in data:
+        msg = data['message']
+        u_id = msg['from']['id']
+        chat_id = msg['chat']['id']
+        text = msg.get('text', '')
 
-    if state == 'GET_TITLE':
-        user_states[user_id].update({'title': text, 'step': 'GET_DESC'})
-        send_message(chat_id, "حالا **توضیحات و متن** قرعه‌کشی را بفرستید:")
+        if text == '/start':
+            user_data[u_id] = {'step': 'START'}
+            keyboard = {
+                "inline_keyboard": [[
+                    {"text": "🎁 قرعه‌کشی جدید", "callback_data": "new_lottery"},
+                    {"text": "📝 روی پست کانال", "callback_data": "post_lottery"}
+                ]]
+            }
+            send_message(chat_id, "سلام! به ربات قرعه‌کشی خوش آمدید. 😊\nلطفاً انتخاب کنید که قصد انجام چه نوع قرعه‌کشی را دارید؟", keyboard)
+            return jsonify({'status': 'ok'}), 200
 
-    elif state == 'GET_DESC':
-        user_states[user_id].update({'desc': text, 'step': 'GET_PHOTO'})
-        send_message(chat_id, "اگر مایلید یک **عکس** بفرستید، در غیر این صورت بنویسید 'ندارم':")
+        state = user_data.get(u_id, {}).get('step')
 
-    elif state == 'GET_PHOTO':
-        # در اینجا فرض بر ساده‌سازی است (دریافت عکس یا متن 'ندارم')
-        user_states[user_id].update({'step': 'GET_WINNERS_COUNT'})
-        send_message(chat_id, "تعداد **نفرات برنده** را به عدد وارد کنید:")
+        # مرحله دریافت لینک (مخصوص مسیر دوم)
+        if state == 'GET_LINK':
+            user_data[u_id].update({'post_link': text, 'step': 'GET_WINNERS_COUNT'})
+            send_message(chat_id, "لینک دریافت شد.\n\n۲. تعداد **نفرات برنده** را وارد کنید:")
 
-    elif state == 'GET_WINNERS_COUNT':
-        user_states[user_id].update({'winners_count': text, 'step': 'GET_PRIZES'})
-        send_message(chat_id, f"لطفاً جوایز را به ترتیب برای {text} نفر بنویسید:")
+        # مرحله دریافت عنوان (مخصوص مسیر اول)
+        elif state == 'GET_TITLE':
+            user_data[u_id].update({'title': text, 'step': 'GET_DESC'})
+            send_message(chat_id, "۲. حالا **متن و توضیحات** قرعه‌کشی را بنویسید:")
 
-    elif state == 'GET_PRIZES':
-        user_states[user_id].update({'prizes': text, 'step': 'GET_TIME'})
-        send_message(chat_id, "تاریخ و ساعت قرعه‌کشی را وارد کنید (مثلاً: فردا ساعت ۱۸):")
+        # دریافت توضیحات
+        elif state == 'GET_DESC':
+            user_data[u_id].update({'desc': text, 'step': 'GET_PHOTO'})
+            send_message(chat_id, "۳. (اختیاری) یک **عکس** برای قرعه‌کشی بفرستید.\nاگر عکسی ندارید، عبارت 'ندارم' را بفرستید.")
 
-    elif state == 'GET_TIME':
-        user_states[user_id].update({'time': text, 'step': 'PREVIEW'})
-        s = user_states[user_id]
-        preview = f"📋 **پیش‌نمایش قرعه‌کشی**\n\n🔹 عنوان: {s['title']}\n🔹 توضیحات: {s['desc']}\n🔹 جوایز: {s['prizes']}\n🔹 زمان: {s['time']}"
-        
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "📢 انتشار در کانال", "callback_data": "publish"}],
-                [{"text": "🔗 عضویت در وام‌سرا", "url": "https://ble.ir/wamsara"}]
-            ]
-        }
-        send_message(chat_id, preview, keyboard)
+        # دریافت عکس (اختیاری)
+        elif state == 'GET_PHOTO':
+            photo = msg.get('photo')
+            if photo:
+                user_data[u_id]['photo'] = photo[-1]['file_id']
+            user_data[u_id]['step'] = 'GET_WINNERS_COUNT'
+            send_message(chat_id, "۴. تعداد **نفرات برنده** (خروجی آیدی‌ها) را به عدد وارد کنید:")
+
+        # دریافت تعداد برنده‌ها
+        elif state == 'GET_WINNERS_COUNT':
+            if text.isdigit():
+                user_data[u_id].update({'count': text, 'step': 'GET_PRIZES'})
+                send_message(chat_id, f"۵. لطفاً جوایز را برای این {text} نفر به ترتیب بنویسید:")
+            else:
+                send_message(chat_id, "لطفاً فقط عدد بفرستید.")
+
+        # دریافت جوایز
+        elif state == 'GET_PRIZES':
+            user_data[u_id].update({'prizes': text, 'step': 'GET_TIME'})
+            send_message(chat_id, "۶. تاریخ و ساعت قرعه‌کشی را بنویسید (مثلاً: فردا ساعت ۲۱):")
+
+        # دریافت زمان و نمایش پیش‌نمایش
+        elif state == 'GET_TIME':
+            user_data[u_id].update({'time': text, 'step': 'PREVIEW'})
+            d = user_data[u_id]
+            
+            # ساخت متن پیش‌نمایش
+            preview_text = f"📋 **پیش‌نمایش قرعه‌کشی**\n\n"
+            preview_text += f"🔹 عنوان: {d.get('title', 'قرعه‌کشی پست بله')}\n"
+            preview_text += f"📝 توضیحات: {d.get('desc', 'بررسی دیدگاه‌های پست')}\n"
+            preview_text += f"🎁 جوایز: {d['prizes']}\n"
+            preview_text += f"👥 تعداد برنده‌ها: {d['count']} نفر\n"
+            preview_text += f"⏰ زمان اجرا: {d['time']}"
+
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": "🚀 تایید و انتشار", "callback_data": "check_and_publish"}],
+                    [{"text": "📢 عضویت در وام‌سرا", "url": "https://ble.ir/wamsara"}]
+                ]
+            }
+
+            if d.get('photo'):
+                send_photo(chat_id, d['photo'], preview_text, keyboard)
+            else:
+                send_message(chat_id, preview_text, keyboard)
 
     return jsonify({'status': 'ok'}), 200
 
