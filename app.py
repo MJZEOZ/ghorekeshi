@@ -8,72 +8,97 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from config import BOT_TOKEN, BASE_URL
 
 app = Flask(__name__)
-# دیتابیس برای ذخیره قرعه‌کشی‌ها
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///lottery_bot.db'
+# حافظه دائمی (SQLite)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///lottery_data.db'
 db = SQLAlchemy(app)
 
-# زمان‌بند برای اجرای خودکار قرعه‌کشی‌ها
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-# --- مدل دیتابیس ---
+# --- مدل دیتابیس برای ذخیره قرعه‌کشی‌ها ---
 class Lottery(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.String(50))
     title = db.Column(db.String(100))
-    winners_count = db.Column(db.Integer)
+    description = db.Column(db.Text)
     channel_id = db.Column(db.String(100))
-    exec_time = db.Column(db.DateTime) # ذخیره به میلادی
+    image_file_id = db.Column(db.String(200), nullable=True)
+    post_link = db.Column(db.String(300), nullable=True) # برای قرعه‌کشی روی کامنت
+    exec_time = db.Column(db.DateTime)
     status = db.Column(db.String(20), default='pending') # pending, done
 
 with app.app_context():
     db.create_all()
 
-# --- توابع کمکی ---
+# دیکشنری موقت برای مراحل ساخت
+user_states = {}
+
 def send_message(chat_id, text, reply_markup=None):
     url = f"{BASE_URL}/sendMessage"
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown', 'reply_markup': reply_markup}
     return requests.post(url, json=payload).json()
 
-def shamsi_to_miladi(shamsi_str):
-    """ تبدیل رشته '1403/03/25 19:30' به شیء datetime میلادی """
-    try:
-        date_part, time_part = shamsi_str.split(' ')
-        y, m, d = map(int, date_part.split('/'))
-        hh, mm = map(int, time_part.split(':'))
-        # تبدیل شمسی به میلادی
-        miladi_date = jdatetime.date(y, m, d).togregorian()
-        return datetime(miladi_date.year, miladi_date.month, miladi_date.day, hh, mm)
-    except:
-        return None
+def send_photo(chat_id, file_id, caption, reply_markup=None):
+    url = f"{BASE_URL}/sendPhoto"
+    payload = {'chat_id': chat_id, 'photo': file_id, 'caption': caption, 'reply_markup': reply_markup}
+    return requests.post(url, json=payload).json()
 
-def run_automated_lottery(lottery_id):
-    """ این تابع توسط Scheduler در زمان مقرر صدا زده می‌شود """
+def shamsi_to_miladi(shamsi_str):
+    try:
+        # ورودی: 1403/03/25 19:10
+        date_p, time_p = shamsi_str.split(' ')
+        y, m, d = map(int, date_p.split('/'))
+        hh, mm = map(int, time_p.split(':'))
+        miladi = jdatetime.datetime(y, m, d, hh, mm).togregorian()
+        return miladi
+    except: return None
+
+# --- منطق اجرای قرعه‌کشی در زمان مقرر ---
+def run_lottery_task(lottery_id):
     with app.app_context():
         lott = Lottery.query.get(lottery_id)
-        if lott and lott.status == 'pending':
-            # اینجا منطق انتخاب برنده از کامنت‌ها یا لیست شرکت‌کنندگان
-            res_text = f"🎊 **نتیجه قرعه‌کشی فرارسید!**\n📌 عنوان: {lott.title}\n\n🏆 برندگان خوش‌شانس انتخاب شدند."
-            send_message(lott.channel_id, res_text)
-            
-            lott.status = 'done'
-            db.session.commit()
+        if not lott or lott.status != 'pending': return
+        
+        # در اینجا لیست شرکت‌کنندگان (از دیتابیس یا کامنت‌ها) استخراج می‌شود
+        # برای سادگی، فعلاً اعلام پایان قرعه‌کشی:
+        result_msg = f"🎉 **قرعه‌کشی انجام شد!**\n\n📌 موضوع: {lott.title}\n🎁 برنده‌ها به زودی در همین کانال اعلام می‌شوند."
+        send_message(lott.channel_id, result_msg)
+        
+        lott.status = 'done'
+        db.session.commit()
 
-# --- مدیریت پیام‌ها ---
 @app.route('/', methods=['POST'])
 def webhook():
     data = request.get_json()
     if 'message' in data:
         msg = data['message']
-        u_id, chat_id, text = str(msg['from']['id']), msg['chat']['id'], msg.get('text', '')
+        u_id = str(msg['from']['id'])
+        chat_id = msg['chat']['id']
+        text = msg.get('text', '')
 
         if text == '/start':
             kb = {"inline_keyboard": [
-                [{"text": "➕ قرعه‌کشی جدید", "callback_data": "new_lot"}],
-                [{"text": "📋 قرعه‌کشی‌های من", "callback_data": "my_lots"}],
-                [{"text": "💬 قرعه‌کشی روی پست (کامنت)", "callback_data": "comment_lot"}]
+                [{"text": "🎁 قرعه‌کشی جدید", "callback_data": "start_new"}],
+                [{"text": "💬 قرعه‌کشی روی کامنت پست", "callback_data": "start_comment_mode"}],
+                [{"text": "📊 قرعه‌کشی‌های من", "callback_data": "my_lots"}]
             ]}
-            send_message(chat_id, "سلام! به ربات قرعه‌کشی خوش آمدید. یکی از گزینه‌ها را انتخاب کنید:", kb)
+            send_message(chat_id, "خوش آمدید! مدیریت قرعه‌کشی‌های خود را شروع کنید:", kb)
+            return jsonify({'ok': True})
+
+        # --- هندل کردن آپلود عکس در مرحله آخر ---
+        state = user_states.get(u_id, {}).get('step')
+        if state == 'WAITING_FOR_PHOTO':
+            if 'photo' in msg:
+                # گرفتن بزرگترین سایز عکس
+                file_id = msg['photo'][-1]['file_id']
+                user_states[u_id]['image_id'] = file_id
+                send_message(chat_id, "✅ تصویر دریافت شد. در حال آماده‌سازی پیش‌نمایش...")
+            else:
+                send_message(chat_id, "تصویری دریافت نشد، قرعه‌کشی بدون تصویر ثبت می‌شود.")
+            
+            # انتقال به مرحله پیش‌نمایش
+            user_states[u_id]['step'] = 'PREVIEW'
+            # (نمایش دکمه تایید نهایی)
 
     elif 'callback_query' in data:
         cb = data['callback_query']
@@ -82,18 +107,23 @@ def webhook():
         if cmd == "my_lots":
             lots = Lottery.query.filter_by(user_id=u_id).all()
             if not lots:
-                send_message(chat_id, "❌ شما هیچ قرعه‌کشی فعالی ندارید.")
+                send_message(chat_id, "شما هنوز قرعه‌کشی‌ای ثبت نکرده‌اید.")
             else:
-                btns = [[{"text": f"{'⏳' if l.status=='pending' else '✅'} {l.title}", "callback_data": f"view_{l.id}"}] for l in lots]
-                send_message(chat_id, "لیست قرعه‌کشی‌های شما:", {"inline_keyboard": btns})
+                btns = []
+                for l in lots:
+                    icon = "✅" if l.status == 'done' else "⏳"
+                    btns.append([{"text": f"{icon} {l.title}", "callback_data": f"manage_{l.id}"}])
+                send_message(chat_id, "لیست قرعه‌کشی‌های شما (برای مدیریت کلیک کنید):", {"inline_keyboard": btns})
 
-        elif cmd.startswith("view_"):
+        elif cmd.startswith("manage_"):
             l_id = cmd.split("_")[1]
             l = Lottery.query.get(l_id)
-            status_text = "در انتظار اجرا" if l.status == 'pending' else "انجام شده"
-            msg_text = f"📌 عنوان: {l.title}\n⏰ زمان اجرا: {l.exec_time}\nوضعیت: {status_text}"
-            btns = {"inline_keyboard": [[{"text": "🗑 حذف قرعه‌کشی", "callback_data": f"del_{l.id}"}]]}
-            send_message(chat_id, msg_text, btns)
+            text = f"📌 عنوان: {l.title}\nوضعیت: {l.status}\nزمان اجرا: {l.exec_time}"
+            kb = {"inline_keyboard": [
+                [{"text": "🗑 حذف قرعه‌کشی", "callback_data": f"del_{l.id}"}],
+                [{"text": "✏️ ویرایش عنوان", "callback_data": f"edit_{l.id}"}]
+            ]}
+            send_message(chat_id, text, kb)
 
         elif cmd.startswith("del_"):
             l_id = cmd.split("_")[1]
@@ -102,21 +132,11 @@ def webhook():
             db.session.commit()
             send_message(chat_id, "🗑 قرعه‌کشی با موفقیت حذف شد.")
 
-        elif cmd == "confirm_final":
-            # این بخش زمانی اجرا می‌شود که کاربر دکمه تایید نهایی را بزند
-            # فرض می‌کنیم اطلاعات در یک دیکشنری موقت user_temp_data ذخیره شده
-            # miladi_dt = shamsi_to_miladi(user_temp_data[u_id]['time_str'])
-            
-            # ثبت در دیتابیس
-            new_l = Lottery(user_id=u_id, title="تست", winners_count=1, channel_id="@test", exec_time=datetime.now()) # مقادیر فرضی
-            db.session.add(new_l)
-            db.session.commit()
-            
-            # اضافه کردن به صف زمان‌بندی
-            scheduler.add_job(run_automated_lottery, 'date', run_date=new_l.exec_time, args=[new_l.id])
-            send_message(chat_id, "✅ قرعه‌کشی ثبت و زمان‌بندی شد.")
+        elif cmd == "start_comment_mode":
+            user_states[u_id] = {'step': 'GET_POST_LINK'}
+            send_message(chat_id, "🔗 لطفاً لینک پست کانال بله را بفرستید:\n(ربات باید در کانال ادمین باشد)")
 
-    return jsonify({'status': 'ok'}), 200
+    return jsonify({'ok': True})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
