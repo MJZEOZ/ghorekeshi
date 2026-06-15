@@ -1,6 +1,4 @@
-Flask
+flask
 requests
-gunicorn
 apscheduler
 jdatetime
-flask_sqlalchemy
